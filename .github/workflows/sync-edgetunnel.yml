@@ -1,0 +1,56 @@
+name: Sync edgetunnel every 3 weeks
+
+on:
+  schedule:
+    # Runs every Monday; the script below proceeds only once every 21 days.
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the three-week cadence
+        id: cadence
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            days=$(( $(date -u +%s) / 86400 ))
+            # Unix day 4 was a Monday. Because 21 is divisible by 7,
+            # this selects exactly one Monday in every three-week cycle.
+            if [[ $(( days % 21 )) -ne 4 ]]; then
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.cadence.outputs.run == 'true'
+
+      - name: Download the upstream Pages worker
+        if: steps.cadence.outputs.run == 'true'
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 \
+            --output _worker.js.new \
+            https://raw.githubusercontent.com/cmliu/edgetunnel/main/_worker.js
+          grep -q "export default" _worker.js.new
+          mv _worker.js.new _worker.js
+
+      - name: Commit only a real update
+        if: steps.cadence.outputs.run == 'true'
+        shell: bash
+        run: |
+          if git diff --quiet -- _worker.js; then
+            echo "Upstream code is unchanged."
+            exit 0
+          fi
+          git config user.name "edgetunnel updater"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add _worker.js
+          git commit -m "chore: sync edgetunnel upstream"
+          git push
